@@ -259,6 +259,8 @@ def render_board(fen: str) -> str:
       1  R  N  B  Q  K  B  N  R
          a  b  c  d  e  f  g  h
     """
+    if not fen or " " not in fen:
+        return "(no board)"
     ranks_str = fen.split()[0]
     lines: list[str] = []
 

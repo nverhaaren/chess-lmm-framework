@@ -151,7 +151,8 @@ async def run_game(
         # Check game status
         try:
             status = await human_client.get_status()
-        except McpError:
+        except McpError as e:
+            logger.error("Failed to get game status: %s", e.message)
             break
 
         if status.get("server_state") == "game_over":
@@ -201,8 +202,8 @@ async def run_game(
     try:
         await human_client.done()
         await llm_client.done()
-    except McpError:
-        pass
+    except McpError as e:
+        logger.debug("Error during done cleanup: %s", e.message)
 
     write(f"\nGame logs saved to {log_dir}/")
 

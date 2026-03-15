@@ -279,3 +279,11 @@ class TestRenderBoard:
         for i in range(8):
             expected_rank = str(8 - i)
             assert lines[i].strip().startswith(expected_rank)
+
+    def test_empty_fen_string(self) -> None:
+        """render_board should handle empty FEN gracefully."""
+        assert render_board("") == "(no board)"
+
+    def test_fen_no_space(self) -> None:
+        """render_board should handle FEN with no space separator."""
+        assert render_board("garbage") == "(no board)"
