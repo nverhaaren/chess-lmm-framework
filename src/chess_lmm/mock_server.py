@@ -360,9 +360,7 @@ class MockChessGame:
 
         # For the join response, map to the two valid values
         join_status: Literal["awaiting_players", "ongoing"] = (
-            "awaiting_players"
-            if self.game_status == "awaiting_players"
-            else "ongoing"
+            "awaiting_players" if self.game_status == "awaiting_players" else "ongoing"
         )
 
         return JoinGameResult(
