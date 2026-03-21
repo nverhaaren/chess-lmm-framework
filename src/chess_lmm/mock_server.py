@@ -527,11 +527,11 @@ class MockChessGame:
         # Parse move
         try:
             parsed = _parse_move(self.board, move)
-        except _AmbiguousMove:
+        except _AmbiguousMoveError as e:
             raise McpError(
                 "ambiguous_move",
                 f"Ambiguous move: '{move}' matches multiple legal moves.",
-            )
+            ) from e
         if parsed is None:
             # Distinguish between invalid format and illegal move.
             # If the string looks like a valid UCI coordinate pair or a
@@ -782,7 +782,7 @@ class MockChessServer:
 # --- Helper functions ---
 
 
-class _AmbiguousMove(Exception):
+class _AmbiguousMoveError(Exception):
     """Raised when SAN input matches multiple legal moves."""
 
 
@@ -818,7 +818,7 @@ def _parse_move(board: chess.Board, move_str: str) -> chess.Move | None:
     3. LAN fallback on original string.
 
     Returns the parsed Move or None if both fail.
-    Raises _AmbiguousMove if SAN is ambiguous.
+    Raises _AmbiguousMoveError if SAN is ambiguous.
     """
     # 1. Normalize
     normalized = _normalize_san(move_str)
@@ -826,8 +826,8 @@ def _parse_move(board: chess.Board, move_str: str) -> chess.Move | None:
     # 2. Try SAN on normalized string
     try:
         return board.parse_san(normalized)
-    except chess.AmbiguousMoveError:
-        raise _AmbiguousMove(normalized)
+    except chess.AmbiguousMoveError as e:
+        raise _AmbiguousMoveError(normalized) from e
     except (chess.IllegalMoveError, chess.InvalidMoveError):
         pass
 
