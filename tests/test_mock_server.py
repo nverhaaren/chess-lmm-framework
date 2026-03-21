@@ -242,6 +242,49 @@ class TestMakeMove:
         result = await white.make_move("a8=Q")
         assert "Q" in result["move_played"]["san"]
 
+    async def test_san_normalization_annotation_stripped(
+        self, server: MockChessServer
+    ) -> None:
+        """Move with assessment glyph should be accepted after stripping."""
+        white, black = await _setup_game(server)
+        result = await white.make_move("e4!")
+        assert result["move_played"]["san"] == "e4"
+
+    async def test_san_normalization_double_annotation(
+        self, server: MockChessServer
+    ) -> None:
+        """Double assessment glyph (!!, ??) should be stripped."""
+        white, black = await _setup_game(server)
+        result = await white.make_move("e4!!")
+        assert result["move_played"]["san"] == "e4"
+
+    async def test_san_normalization_digit_zero_castling(
+        self, server: MockChessServer
+    ) -> None:
+        """Digit-zero castling (0-0) should be converted to O-O."""
+        white, black = await _setup_game(
+            server, history=["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"]
+        )
+        result = await white.make_move("0-0")
+        assert result["move_played"]["san"] == "O-O"
+
+    async def test_san_normalization_nag_stripped(
+        self, server: MockChessServer
+    ) -> None:
+        """NAG ($N) should be stripped."""
+        white, black = await _setup_game(server)
+        result = await white.make_move("e4 $1")
+        assert result["move_played"]["san"] == "e4"
+
+    async def test_ambiguous_move_error(self, server: MockChessServer) -> None:
+        """Ambiguous SAN should produce ambiguous_move error code."""
+        # Two white knights on b1 and f1 can both go to d2 — "Nd2" is ambiguous
+        fen = "7k/8/8/8/8/8/8/1N1K1N2 w - - 0 1"
+        white, black = await _setup_game(server, fen=fen)
+        with pytest.raises(McpError) as exc_info:
+            await white.make_move("Nd2")
+        assert exc_info.value.code == "ambiguous_move"
+
 
 class TestCheckmate:
     """Test checkmate detection."""
@@ -432,7 +475,7 @@ class TestDone:
 
     async def test_done_before_game_over(self, server: MockChessServer) -> None:
         white, black = await _setup_game(server)
-        with pytest.raises(McpError, match=r"game_over|wrong_state"):
+        with pytest.raises(McpError, match=r"game_not_over"):
             await white.done()
 
     async def test_done_twice(self, server: MockChessServer) -> None:

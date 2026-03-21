@@ -360,9 +360,7 @@ class MockChessGame:
 
         # For the join response, map to the two valid values
         join_status: Literal["awaiting_players", "ongoing"] = (
-            "awaiting_players"
-            if self.game_status == "awaiting_players"
-            else "ongoing"
+            "awaiting_players" if self.game_status == "awaiting_players" else "ongoing"
         )
 
         return JoinGameResult(
@@ -371,7 +369,8 @@ class MockChessGame:
         )
 
     def done(self, session_id: str) -> DoneResult:
-        self._require_state("game_over")
+        if self.server_state != "game_over":
+            raise McpError("game_not_over", "The game is still in progress.")
         if session_id in self._done_sessions:
             raise McpError("already_done", "This client has already sent done.")
         self._done_sessions.add(session_id)
@@ -526,7 +525,13 @@ class MockChessGame:
             )
 
         # Parse move
-        parsed = _parse_move(self.board, move)
+        try:
+            parsed = _parse_move(self.board, move)
+        except _AmbiguousMove:
+            raise McpError(
+                "ambiguous_move",
+                f"Ambiguous move: '{move}' matches multiple legal moves.",
+            )
         if parsed is None:
             # Distinguish between invalid format and illegal move.
             # If the string looks like a valid UCI coordinate pair or a
@@ -777,18 +782,56 @@ class MockChessServer:
 # --- Helper functions ---
 
 
+class _AmbiguousMove(Exception):
+    """Raised when SAN input matches multiple legal moves."""
+
+
+def _normalize_san(move_str: str) -> str:
+    """Apply SAN normalization per spec Section 6.3.
+
+    1. Strip NAGs ($N).
+    2. Strip move assessment glyphs (longest first).
+    3. Convert digit-zero castling to letter-O castling.
+    4. Strip leading/trailing whitespace.
+    """
+    s = move_str.strip()
+    # 1. Strip NAGs
+    s = re.sub(r"\$\d+", "", s).strip()
+    # 2. Strip assessment glyphs (longest first)
+    for glyph in ("!!", "??", "!?", "?!", "!", "?"):
+        if s.endswith(glyph):
+            s = s[: -len(glyph)]
+            break
+    # 3. Convert digit-zero castling
+    if s == "0-0-0":
+        s = "O-O-O"
+    elif s == "0-0":
+        s = "O-O"
+    return s.strip()
+
+
 def _parse_move(board: chess.Board, move_str: str) -> chess.Move | None:
-    """Parse a move string per spec Section 8.4 (SAN then LAN fallback).
+    """Parse a move string per spec Section 8.4.
+
+    1. Apply SAN normalization (Section 6.3).
+    2. Try SAN parse.
+    3. LAN fallback on original string.
 
     Returns the parsed Move or None if both fail.
+    Raises _AmbiguousMove if SAN is ambiguous.
     """
-    # 1. Try SAN (python-chess handles normalization)
+    # 1. Normalize
+    normalized = _normalize_san(move_str)
+
+    # 2. Try SAN on normalized string
     try:
-        return board.parse_san(move_str)
-    except (chess.IllegalMoveError, chess.InvalidMoveError, chess.AmbiguousMoveError):
+        return board.parse_san(normalized)
+    except chess.AmbiguousMoveError:
+        raise _AmbiguousMove(normalized)
+    except (chess.IllegalMoveError, chess.InvalidMoveError):
         pass
 
-    # 2. LAN fallback (UCI format in python-chess)
+    # 3. LAN fallback on original string (not normalized)
     try:
         move = chess.Move.from_uci(move_str)
         if move in board.legal_moves:
