@@ -93,7 +93,9 @@ class TestGameRecorder:
 
 class TestRecordingClient:
     @pytest.fixture
-    async def setup(self, tmp_path: Path) -> tuple[RecordingClient, RecordingClient, Path]:
+    async def setup(
+        self, tmp_path: Path
+    ) -> tuple[RecordingClient, RecordingClient, Path]:
         """Set up a server with two recording clients."""
         server = MockChessServer()
         log_file = tmp_path / "game.jsonl"
