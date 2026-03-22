@@ -41,8 +41,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default="claude-sonnet-4-5-20250514",
-        help="Claude model to use (default: claude-sonnet-4-5-20250514)",
+        default="claude-sonnet-4-6",
+        help="Claude model to use (default: claude-sonnet-4-6)",
     )
     parser.add_argument(
         "--fen",
