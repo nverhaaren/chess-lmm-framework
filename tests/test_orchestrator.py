@@ -29,7 +29,7 @@ class TestParseArgs:
     def test_defaults(self) -> None:
         args = parse_args([])
         assert args.color == "white"
-        assert args.model == "claude-sonnet-4-5-20250514"
+        assert args.model == "claude-sonnet-4-6"
         assert args.fen is None
         assert args.log_dir == Path("./game-logs")
 

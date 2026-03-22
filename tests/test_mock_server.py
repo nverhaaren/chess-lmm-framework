@@ -29,8 +29,8 @@ async def _setup_game(
     history: list[str] | None = None,
 ) -> tuple:
     """Create game and join two players. Returns (white, black)."""
-    white = server.create_session()
-    black = server.create_session()
+    white = await server.create_session()
+    black = await server.create_session()
     await white.create_game(fen=fen, history=history)
     await white.join_game("white")
     await black.join_game("black")
@@ -49,13 +49,13 @@ class TestStateMachine:
     async def test_create_game_transitions_to_awaiting(
         self, server: MockChessServer
     ) -> None:
-        client = server.create_session()
+        client = await server.create_session()
         result = await client.create_game()
         assert result["game_status"] == "awaiting_players"
         assert server.game.server_state == "awaiting_players"
 
     async def test_first_join_stays_awaiting(self, server: MockChessServer) -> None:
-        client = server.create_session()
+        client = await server.create_session()
         await client.create_game()
         result = await client.join_game("white")
         assert result["game_status"] == "awaiting_players"
@@ -64,8 +64,8 @@ class TestStateMachine:
     async def test_second_join_transitions_to_ongoing(
         self, server: MockChessServer
     ) -> None:
-        white = server.create_session()
-        black = server.create_session()
+        white = await server.create_session()
+        black = await server.create_session()
         await white.create_game()
         await white.join_game("white")
         result = await black.join_game("black")
@@ -73,13 +73,13 @@ class TestStateMachine:
         assert server.game.server_state == "ongoing"
 
     async def test_cannot_create_game_twice(self, server: MockChessServer) -> None:
-        client = server.create_session()
+        client = await server.create_session()
         await client.create_game()
         with pytest.raises(McpError, match="wrong_state"):
             await client.create_game()
 
     async def test_cannot_join_without_game(self, server: MockChessServer) -> None:
-        client = server.create_session()
+        client = await server.create_session()
         with pytest.raises(McpError, match="no_active_game"):
             await client.join_game("white")
 
@@ -88,46 +88,46 @@ class TestCreateGame:
     """Test game creation with various parameters."""
 
     async def test_default_fen(self, server: MockChessServer) -> None:
-        client = server.create_session()
+        client = await server.create_session()
         result = await client.create_game()
         assert result["fen"] == INITIAL_FEN
         assert result["time_control"] is None
         assert result["game_id"]  # non-empty
 
     async def test_custom_fen(self, server: MockChessServer) -> None:
-        client = server.create_session()
+        client = await server.create_session()
         fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
         result = await client.create_game(fen=fen)
         assert result["fen"] == fen
 
     async def test_invalid_fen(self, server: MockChessServer) -> None:
-        client = server.create_session()
+        client = await server.create_session()
         with pytest.raises(McpError) as exc_info:
             await client.create_game(fen="not-a-fen")
         assert exc_info.value.code == "invalid_fen"
 
     async def test_fen_with_invalid_position(self, server: MockChessServer) -> None:
         # Two white kings
-        client = server.create_session()
+        client = await server.create_session()
         with pytest.raises(McpError) as exc_info:
             await client.create_game(fen="KK6/8/8/8/8/8/8/8 w - - 0 1")
         assert exc_info.value.code == "invalid_fen"
 
     async def test_history_replay(self, server: MockChessServer) -> None:
-        client = server.create_session()
+        client = await server.create_session()
         result = await client.create_game(history=["e4", "e5", "Nf3"])
         # After 1. e4 e5 2. Nf3, it's Black's move
         assert "b KQkq" in result["fen"]
 
     async def test_invalid_history(self, server: MockChessServer) -> None:
-        client = server.create_session()
+        client = await server.create_session()
         with pytest.raises(McpError) as exc_info:
             await client.create_game(history=["e4", "e4"])  # e4 twice is illegal
         assert exc_info.value.code == "invalid_history"
 
     async def test_fen_plus_history(self, server: MockChessServer) -> None:
         """Create from custom FEN and replay history on top."""
-        client = server.create_session()
+        client = await server.create_session()
         fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
         result = await client.create_game(fen=fen, history=["e5"])
         assert "w KQkq" in result["fen"]  # White's move after e5
@@ -137,35 +137,35 @@ class TestJoinGame:
     """Test join_game behavior."""
 
     async def test_join_white(self, server: MockChessServer) -> None:
-        client = server.create_session()
+        client = await server.create_session()
         await client.create_game()
         result = await client.join_game("white")
         assert result["assigned_color"] == "white"
 
     async def test_join_black(self, server: MockChessServer) -> None:
-        white = server.create_session()
-        black = server.create_session()
+        white = await server.create_session()
+        black = await server.create_session()
         await white.create_game()
         await white.join_game("white")
         result = await black.join_game("black")
         assert result["assigned_color"] == "black"
 
     async def test_join_random(self, server: MockChessServer) -> None:
-        client = server.create_session()
+        client = await server.create_session()
         await client.create_game()
         result = await client.join_game("random")
         assert result["assigned_color"] in ("white", "black")
 
     async def test_color_taken(self, server: MockChessServer) -> None:
-        c1 = server.create_session()
-        c2 = server.create_session()
+        c1 = await server.create_session()
+        c2 = await server.create_session()
         await c1.create_game()
         await c1.join_game("white")
         with pytest.raises(McpError, match="color_taken"):
             await c2.join_game("white")
 
     async def test_already_joined(self, server: MockChessServer) -> None:
-        client = server.create_session()
+        client = await server.create_session()
         await client.create_game()
         await client.join_game("white")
         with pytest.raises(McpError, match="already_joined"):
@@ -495,8 +495,8 @@ class TestQueryTools:
         assert result["fen"] == INITIAL_FEN
 
     async def test_get_board_not_joined(self, server: MockChessServer) -> None:
-        c1 = server.create_session()
-        c2 = server.create_session()
+        c1 = await server.create_session()
+        c2 = await server.create_session()
         await c1.create_game()
         await c1.join_game("white")
         # c2 hasn't joined
@@ -608,8 +608,8 @@ class TestSessionIsolation:
     """Test that sessions are properly isolated."""
 
     async def test_different_session_ids(self, server: MockChessServer) -> None:
-        c1 = server.create_session()
-        c2 = server.create_session()
+        c1 = await server.create_session()
+        c2 = await server.create_session()
         assert c1.session_id != c2.session_id
 
     async def test_draw_offered_only_to_opponent(self, server: MockChessServer) -> None:
@@ -678,7 +678,7 @@ class TestEdgeCases:
 
     async def test_no_active_game_errors(self, server: MockChessServer) -> None:
         """Query tools fail with no_active_game when no game exists."""
-        client = server.create_session()
+        client = await server.create_session()
         with pytest.raises(McpError, match="no_active_game"):
             await client.get_board()
         with pytest.raises(McpError, match="no_active_game"):

@@ -772,7 +772,7 @@ class MockChessServer:
         """Access the underlying game state (for testing)."""
         return self._game
 
-    def create_session(self) -> MockSessionClient:
+    async def create_session(self) -> MockSessionClient:
         """Create a new session client with a unique session ID."""
         self._session_counter += 1
         session_id = f"session-{self._session_counter}"
