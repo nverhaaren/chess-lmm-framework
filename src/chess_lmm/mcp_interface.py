@@ -137,6 +137,6 @@ class ChessServerFactory(Protocol):
     The real MCP implementation would create clients that connect via HTTP.
     """
 
-    def create_session(self) -> ChessSessionClient:
+    async def create_session(self) -> ChessSessionClient:
         """Create a new session client."""
         ...

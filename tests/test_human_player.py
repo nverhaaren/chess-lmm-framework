@@ -16,8 +16,8 @@ async def _setup_game(
     fen: str | None = None,
 ) -> tuple:
     """Create game and join two players."""
-    white = server.create_session()
-    black = server.create_session()
+    white = await server.create_session()
+    black = await server.create_session()
     await white.create_game(fen=fen)
     await white.join_game("white")
     await black.join_game("black")

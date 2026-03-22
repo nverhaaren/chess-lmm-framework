@@ -1,7 +1,7 @@
 """Game lifecycle management and CLI entry point.
 
-Creates mock server, wraps clients with recording, launches players
-as async tasks, and manages game flow.
+Creates a chess server (mock or real MCP), wraps clients with recording,
+launches players as async tasks, and manages game flow.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from typing import Any
 
 from chess_lmm.human_player import human_turn
 from chess_lmm.llm_agent import llm_turn
-from chess_lmm.mock_server import MockChessServer
 from chess_lmm.recording import (
     GameRecorder,
     LlmInteractionLogger,
@@ -61,6 +60,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Enable verbose logging",
     )
+
+    server_group = parser.add_mutually_exclusive_group()
+    server_group.add_argument(
+        "--server-url",
+        default=None,
+        help="URL of a running MCP chess server (SSE endpoint)",
+    )
+    server_group.add_argument(
+        "--mock",
+        action="store_true",
+        default=False,
+        help="Use the built-in mock server (default when --server-url is not given)",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -79,133 +92,149 @@ async def run_game(
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    # Create server and sessions
-    server = MockChessServer()
-    human_raw = server.create_session()
-    llm_raw = server.create_session()
-
-    # Set up recording
-    log_dir: Path = args.log_dir
-    mcp_log = log_dir / "mcp_recording.jsonl"
-    llm_log = log_dir / "llm_interactions.jsonl"
-
-    human_recorder = GameRecorder(mcp_log, human_raw.session_id)
-    llm_recorder = GameRecorder(mcp_log, llm_raw.session_id)
-    llm_interaction_logger = LlmInteractionLogger(llm_log)
-
-    human_client = RecordingClient(human_raw, human_recorder)
-    llm_client = RecordingClient(llm_raw, llm_recorder)
-
     out = output_stream or sys.stdout
 
     def write(text: str) -> None:
         out.write(text + "\n")
         out.flush()
 
-    # Create game
-    create_result = await human_client.create_game(fen=args.fen)
-    logger.info("Game created: %s", create_result["game_id"])
+    # Create server
+    mcp_connection = None
+    if args.server_url:
+        from chess_lmm.mcp_client import McpServerConnection
 
-    # Determine colors
-    human_color = args.color
-    if human_color == "random":
-        import random
+        mcp_connection = McpServerConnection(args.server_url)
+        server: Any = mcp_connection
+        write(f"Connecting to MCP server at {args.server_url}...")
+    else:
+        from chess_lmm.mock_server import MockChessServer
 
-        human_color = random.choice(["white", "black"])
+        server = MockChessServer()
 
-    llm_color = "black" if human_color == "white" else "white"
+    try:
+        human_raw = await server.create_session()
+        llm_raw = await server.create_session()
 
-    # Join game
-    await human_client.join_game(human_color)
-    await llm_client.join_game(llm_color)
+        # Set up recording
+        log_dir: Path = args.log_dir
+        mcp_log = log_dir / "mcp_recording.jsonl"
+        llm_log = log_dir / "llm_interactions.jsonl"
 
-    write(f"\nYou are playing as {human_color}.")
-    write(f"Claude ({args.model}) is playing as {llm_color}.\n")
+        human_recorder = GameRecorder(mcp_log, human_raw.session_id)
+        llm_recorder = GameRecorder(mcp_log, llm_raw.session_id)
+        llm_interaction_logger = LlmInteractionLogger(llm_log)
 
-    # Display initial board
-    board = await human_client.get_board()
-    write(render_board(board["fen"]))
-    write("")
+        human_client = RecordingClient(human_raw, human_recorder)
+        llm_client = RecordingClient(llm_raw, llm_recorder)
 
-    # Determine who goes first
-    human_goes_first = human_color == "white"
+        # Create game
+        create_result = await human_client.create_game(fen=args.fen)
+        logger.info("Game created: %s", create_result["game_id"])
 
-    # Lazy-import anthropic to avoid import errors when not installed
-    if anthropic_client is None:
-        try:
-            import anthropic
+        # Determine colors
+        human_color = args.color
+        if human_color == "random":
+            import random
 
-            anthropic_client = anthropic.Anthropic()
-        except ImportError:
-            write("Error: anthropic package not installed.")
-            write("Install with: pip install anthropic")
-            return
+            human_color = random.choice(["white", "black"])
 
-    in_stream = input_stream or sys.stdin
+        llm_color = "black" if human_color == "white" else "white"
 
-    # Game loop
-    game_ongoing = True
-    is_human_turn = human_goes_first
+        # Join game
+        await human_client.join_game(human_color)
+        await llm_client.join_game(llm_color)
 
-    while game_ongoing:
-        # Check game status
-        try:
-            status = await human_client.get_status()
-        except McpError as e:
-            logger.error("Failed to get game status: %s", e.message)
-            break
+        write(f"\nYou are playing as {human_color}.")
+        write(f"Claude ({args.model}) is playing as {llm_color}.\n")
 
-        if status.get("server_state") == "game_over":
-            reason = status.get("termination_reason", "Game over")
-            result = status.get("result", "")
-            write(f"\n{reason}")
-            if result:
-                write(f"Result: {result}")
-            break
+        # Display initial board
+        board = await human_client.get_board()
+        write(render_board(board["fen"]))
+        write("")
 
-        if is_human_turn:
-            write(f"\nYour turn ({human_color}):")
+        # Determine who goes first
+        human_goes_first = human_color == "white"
 
-            # Show draw offer if pending
-            if status.get("draw_offered"):
-                write(
-                    "Your opponent has offered a draw. "
-                    "Use /draw accept or /draw decline."
+        # Lazy-import anthropic to avoid import errors when not installed
+        if anthropic_client is None:
+            try:
+                import anthropic
+
+                anthropic_client = anthropic.Anthropic()
+            except ImportError:
+                write("Error: anthropic package not installed.")
+                write("Install with: pip install anthropic")
+                return
+
+        in_stream = input_stream or sys.stdin
+
+        # Game loop
+        game_ongoing = True
+        is_human_turn = human_goes_first
+
+        while game_ongoing:
+            # Check game status
+            try:
+                status = await human_client.get_status()
+            except McpError as e:
+                logger.error("Failed to get game status: %s", e.message)
+                break
+
+            if status.get("server_state") == "game_over":
+                reason = status.get("termination_reason", "Game over")
+                result = status.get("result", "")
+                write(f"\n{reason}")
+                if result:
+                    write(f"Result: {result}")
+                break
+
+            if is_human_turn:
+                write(f"\nYour turn ({human_color}):")
+
+                # Show draw offer if pending
+                if status.get("draw_offered"):
+                    write(
+                        "Your opponent has offered a draw. "
+                        "Use /draw accept or /draw decline."
+                    )
+
+                game_ongoing = await human_turn(
+                    human_client,
+                    input_stream=in_stream,
+                    output_stream=out,
+                )
+            else:
+                write("\nClaude is thinking...")
+                game_ongoing = await llm_turn(
+                    llm_client,
+                    anthropic_client,
+                    args.model,
+                    llm_logger=llm_interaction_logger,
                 )
 
-            game_ongoing = await human_turn(
-                human_client,
-                input_stream=in_stream,
-                output_stream=out,
-            )
-        else:
-            write("\nClaude is thinking...")
-            game_ongoing = await llm_turn(
-                llm_client,
-                anthropic_client,
-                args.model,
-                llm_logger=llm_interaction_logger,
-            )
+                if game_ongoing:
+                    # Show Claude's move
+                    llm_status = await human_client.get_status()
+                    last_move = llm_status.get("last_move")
+                    if last_move:
+                        write(f"Claude played: {last_move.get('san', '?')}")
+                    board = await human_client.get_board()
+                    write(render_board(board["fen"]))
 
-            if game_ongoing:
-                # Show Claude's move
-                llm_status = await human_client.get_status()
-                last_move = llm_status.get("last_move")
-                if last_move:
-                    write(f"Claude played: {last_move.get('san', '?')}")
-                board = await human_client.get_board()
-                write(render_board(board["fen"]))
+            is_human_turn = not is_human_turn
 
-        is_human_turn = not is_human_turn
+        # Game over — send done
+        try:
+            await human_client.done()
+            await llm_client.done()
+        except McpError as e:
+            logger.debug("Error during done cleanup: %s", e.message)
 
-    # Game over — send done
-    try:
-        await human_client.done()
-        await llm_client.done()
-    except McpError as e:
-        logger.debug("Error during done cleanup: %s", e.message)
+        write(f"\nGame logs saved to {log_dir}/")
 
-    write(f"\nGame logs saved to {log_dir}/")
+    finally:
+        if mcp_connection is not None:
+            await mcp_connection.close_all()
 
 
 def main(argv: list[str] | None = None) -> None:

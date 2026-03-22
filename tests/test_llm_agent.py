@@ -55,8 +55,8 @@ async def _setup_game(
     server: MockChessServer,
 ) -> tuple:
     """Create game and join two players."""
-    white = server.create_session()
-    black = server.create_session()
+    white = await server.create_session()
+    black = await server.create_session()
     await white.create_game()
     await white.join_game("white")
     await black.join_game("black")
