@@ -32,6 +32,7 @@ class TestParseArgs:
         assert args.model == "claude-sonnet-4-6"
         assert args.fen is None
         assert args.log_dir == Path("./game-logs")
+        assert args.thinking_budget is None
 
     def test_custom_args(self) -> None:
         args = parse_args(
@@ -50,6 +51,14 @@ class TestParseArgs:
         assert args.model == "claude-opus-4-6"
         assert args.fen == "8/8/8/8/8/8/8/8 w - - 0 1"
         assert args.log_dir == Path("/tmp/logs")
+
+    def test_thinking_budget(self) -> None:
+        args = parse_args(["--thinking-budget", "10000"])
+        assert args.thinking_budget == 10000
+
+    def test_thinking_budget_default_none(self) -> None:
+        args = parse_args([])
+        assert args.thinking_budget is None
 
 
 class TestRunGame:

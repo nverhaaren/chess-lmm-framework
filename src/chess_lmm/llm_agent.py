@@ -135,11 +135,20 @@ async def llm_turn(
     llm_logger: LlmInteractionLogger | None = None,
     system_prompt: str | None = None,
     conversation_history: list[dict[str, Any]] | None = None,
+    thinking_budget: int | None = None,
 ) -> bool:
     """Handle one turn for the LLM agent.
 
     Returns True if the game is still ongoing, False if it ended.
+
+    Args:
+        thinking_budget: Token budget for extended thinking. Must be >= 1024
+            if set. When enabled, max_tokens is automatically increased to
+            accommodate both thinking and output.
     """
+    if thinking_budget is not None and thinking_budget < 1024:
+        raise ValueError("thinking_budget must be >= 1024")
+
     # 1. Query current state
     status = await client.get_status()
     board = await client.get_board()
@@ -166,16 +175,24 @@ async def llm_turn(
         messages.extend(conversation_history)
     messages.append({"role": "user", "content": position_context})
 
+    # Compute max_tokens based on whether thinking is enabled
+    max_tokens = thinking_budget + 1024 if thinking_budget is not None else 1024
+
     # 3. Call Claude with tools
     max_iterations = 5  # Safety limit for tool-use loop
     for _ in range(max_iterations):
-        request_payload = {
+        request_payload: dict[str, Any] = {
             "model": model,
-            "max_tokens": 1024,
+            "max_tokens": max_tokens,
             "system": system_prompt,
             "messages": messages,
             "tools": CHESS_TOOLS,
         }
+        if thinking_budget is not None:
+            request_payload["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": thinking_budget,
+            }
 
         if llm_logger:
             llm_logger.log({"type": "api_request", "payload": request_payload})
@@ -191,11 +208,19 @@ async def llm_turn(
             )
 
         # Process response
-        assistant_content = []
+        assistant_content: list[Any] = []
         tool_use_blocks = []
 
         for block in response.content:
-            if block.type == "text":
+            if block.type == "thinking":
+                # Pass the SDK object directly to preserve the
+                # signature field required by the API.
+                assistant_content.append(block)
+                logger.debug(
+                    "LLM thinking: %s",
+                    block.thinking[:200] if block.thinking else "",
+                )
+            elif block.type == "text":
                 assistant_content.append({"type": "text", "text": block.text})
                 logger.info("LLM says: %s", block.text)
             elif block.type == "tool_use":
