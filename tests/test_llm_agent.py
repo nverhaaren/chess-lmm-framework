@@ -390,25 +390,20 @@ class TestThinking:
         status = await white.get_status()
         assert status["turn"] == "black"
 
-    def test_thinking_budget_too_small(self) -> None:
+    async def test_thinking_budget_too_small(
+        self, server: MockChessServer
+    ) -> None:
         """thinking_budget < 1024 raises ValueError."""
-        import asyncio
+        white, black = await _setup_game(server)
+        mock_anthropic = MagicMock()
 
-        from chess_lmm.mock_server import MockChessServer
-
-        async def run() -> None:
-            server = MockChessServer()
-            white, black = await _setup_game(server)
-            mock_anthropic = MagicMock()
+        with pytest.raises(ValueError, match="thinking_budget must be"):
             await llm_turn(
                 white,
                 mock_anthropic,
                 "test-model",
                 thinking_budget=500,
             )
-
-        with pytest.raises(ValueError, match="thinking_budget must be"):
-            asyncio.get_event_loop().run_until_complete(run())
 
     async def test_thinking_logged(
         self, server: MockChessServer, tmp_path: Path
@@ -435,6 +430,41 @@ class TestThinking:
         log_content = (tmp_path / "llm.jsonl").read_text()
         assert "api_response" in log_content
         assert "Deep analysis of the position" in log_content
+
+    async def test_thinking_logged_on_retry(
+        self, server: MockChessServer, tmp_path: Path
+    ) -> None:
+        """Logging doesn't crash when thinking blocks are in retry messages.
+
+        Thinking blocks are SDK objects (not dicts) in the messages list.
+        The logger must handle serializing them when logging the request
+        payload on the second iteration of the tool-use loop.
+        """
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.side_effect = [
+            make_thinking_tool_response(
+                "Try e5.", "make_move", {"move": "e2e5"}
+            ),
+            make_thinking_tool_response(
+                "Try e4.", "make_move", {"move": "e4"}
+            ),
+        ]
+
+        llm_logger = LlmInteractionLogger(tmp_path / "llm.jsonl")
+        result = await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            llm_logger=llm_logger,
+            thinking_budget=2048,
+        )
+
+        assert result is True
+        # Should have logged 4 entries: request, response, request, response
+        log_lines = (tmp_path / "llm.jsonl").read_text().strip().split("\n")
+        assert len(log_lines) == 4
 
 
 class TestChessTools:
