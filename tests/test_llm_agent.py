@@ -390,9 +390,7 @@ class TestThinking:
         status = await white.get_status()
         assert status["turn"] == "black"
 
-    async def test_thinking_budget_too_small(
-        self, server: MockChessServer
-    ) -> None:
+    async def test_thinking_budget_too_small(self, server: MockChessServer) -> None:
         """thinking_budget < 1024 raises ValueError."""
         white, black = await _setup_game(server)
         mock_anthropic = MagicMock()
@@ -444,12 +442,8 @@ class TestThinking:
 
         mock_anthropic = MagicMock()
         mock_anthropic.messages.create.side_effect = [
-            make_thinking_tool_response(
-                "Try e5.", "make_move", {"move": "e2e5"}
-            ),
-            make_thinking_tool_response(
-                "Try e4.", "make_move", {"move": "e4"}
-            ),
+            make_thinking_tool_response("Try e5.", "make_move", {"move": "e2e5"}),
+            make_thinking_tool_response("Try e4.", "make_move", {"move": "e4"}),
         ]
 
         llm_logger = LlmInteractionLogger(tmp_path / "llm.jsonl")
