@@ -31,7 +31,20 @@ class MockResponse:
         self.content = content
 
     def model_dump(self) -> dict[str, Any]:
-        return {"content": [{"type": b.type} for b in self.content]}
+        blocks: list[dict[str, Any]] = []
+        for b in self.content:
+            d: dict[str, Any] = {"type": b.type}
+            if b.type == "thinking":
+                d["thinking"] = getattr(b, "thinking", "")
+                d["signature"] = getattr(b, "signature", "")
+            elif b.type == "text":
+                d["text"] = getattr(b, "text", "")
+            elif b.type == "tool_use":
+                d["id"] = getattr(b, "id", "")
+                d["name"] = getattr(b, "name", "")
+                d["input"] = getattr(b, "input", {})
+            blocks.append(d)
+        return {"content": blocks}
 
 
 def make_tool_use_response(
@@ -46,6 +59,32 @@ def make_tool_use_response(
 def make_text_response(text: str) -> MockResponse:
     """Create a mock response with only text."""
     return MockResponse([MockContentBlock("text", text=text)])
+
+
+def make_thinking_tool_response(
+    thinking_text: str,
+    tool_name: str,
+    tool_input: dict[str, Any],
+    *,
+    tool_id: str = "tool_1",
+    signature: str = "test-signature-abc123",
+) -> MockResponse:
+    """Create a mock response with thinking + tool_use blocks."""
+    return MockResponse(
+        [
+            MockContentBlock(
+                "thinking",
+                thinking=thinking_text,
+                signature=signature,
+            ),
+            MockContentBlock(
+                "tool_use",
+                id=tool_id,
+                name=tool_name,
+                input=tool_input,
+            ),
+        ]
+    )
 
 
 # --- Fixtures ---
@@ -202,6 +241,224 @@ class TestLlmTurn:
         log_content = (tmp_path / "llm.jsonl").read_text()
         assert "api_request" in log_content
         assert "api_response" in log_content
+
+
+class TestThinking:
+    """Tests for extended thinking support."""
+
+    async def test_makes_move_with_thinking(self, server: MockChessServer) -> None:
+        """Thinking block + tool_use: move succeeds normally."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_thinking_tool_response(
+            "I should play e4 to control the center.",
+            "make_move",
+            {"move": "e4"},
+        )
+
+        result = await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            thinking_budget=2048,
+        )
+
+        assert result is True
+        status = await white.get_status()
+        assert status["turn"] == "black"
+
+    async def test_thinking_budget_in_request(self, server: MockChessServer) -> None:
+        """Verify thinking param and adjusted max_tokens in API request."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_thinking_tool_response(
+            "Analysis...", "make_move", {"move": "e4"}
+        )
+
+        await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            thinking_budget=10000,
+        )
+
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        assert call_kwargs["thinking"] == {
+            "type": "enabled",
+            "budget_tokens": 10000,
+        }
+        assert call_kwargs["max_tokens"] == 11024
+
+    async def test_thinking_disabled_by_default(self, server: MockChessServer) -> None:
+        """Without thinking_budget, no thinking param and max_tokens=1024."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_tool_use_response(
+            "make_move", {"move": "e4"}
+        )
+
+        await llm_turn(white, mock_anthropic, "test-model")
+
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        assert "thinking" not in call_kwargs
+        assert call_kwargs["max_tokens"] == 1024
+
+    async def test_thinking_blocks_preserved_in_history(
+        self, server: MockChessServer
+    ) -> None:
+        """Thinking blocks (with signature) are preserved in messages
+        passed to the API on tool-result continuation."""
+        white, black = await _setup_game(server)
+
+        # First response: thinking + illegal move (triggers retry)
+        # Second response: thinking + valid move
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.side_effect = [
+            make_thinking_tool_response(
+                "Let me try e5.",
+                "make_move",
+                {"move": "e2e5"},
+                signature="sig-first",
+            ),
+            make_thinking_tool_response(
+                "e5 was illegal, try e4.",
+                "make_move",
+                {"move": "e4"},
+                signature="sig-second",
+            ),
+        ]
+
+        result = await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            thinking_budget=2048,
+        )
+
+        assert result is True
+        assert mock_anthropic.messages.create.call_count == 2
+
+        # Check the second API call's messages contain the thinking
+        # block from the first response
+        second_call_kwargs = mock_anthropic.messages.create.call_args_list[1][1]
+        second_messages = second_call_kwargs["messages"]
+
+        # Find the assistant message with the first thinking block
+        assistant_msgs = [m for m in second_messages if m["role"] == "assistant"]
+        assert len(assistant_msgs) >= 1
+        first_assistant = assistant_msgs[0]["content"]
+
+        # The thinking block should be the SDK object with signature
+        thinking_blocks = [
+            b for b in first_assistant if getattr(b, "type", None) == "thinking"
+        ]
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0].signature == "sig-first"
+
+    async def test_thinking_with_illegal_move_retry(
+        self, server: MockChessServer
+    ) -> None:
+        """Thinking enabled, illegal move then valid move: both succeed."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.side_effect = [
+            make_thinking_tool_response(
+                "Try Ke9.",
+                "make_move",
+                {"move": "Ke9"},
+            ),
+            make_thinking_tool_response(
+                "That was wrong. Play d4.",
+                "make_move",
+                {"move": "d4"},
+            ),
+        ]
+
+        result = await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            thinking_budget=2048,
+        )
+
+        assert result is True
+        assert mock_anthropic.messages.create.call_count == 2
+        status = await white.get_status()
+        assert status["turn"] == "black"
+
+    async def test_thinking_budget_too_small(self, server: MockChessServer) -> None:
+        """thinking_budget < 1024 raises ValueError."""
+        white, black = await _setup_game(server)
+        mock_anthropic = MagicMock()
+
+        with pytest.raises(ValueError, match="thinking_budget must be"):
+            await llm_turn(
+                white,
+                mock_anthropic,
+                "test-model",
+                thinking_budget=500,
+            )
+
+    async def test_thinking_logged(
+        self, server: MockChessServer, tmp_path: Path
+    ) -> None:
+        """Thinking content appears in LLM interaction log."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_thinking_tool_response(
+            "Deep analysis of the position.",
+            "make_move",
+            {"move": "e4"},
+        )
+
+        llm_logger = LlmInteractionLogger(tmp_path / "llm.jsonl")
+        await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            llm_logger=llm_logger,
+            thinking_budget=2048,
+        )
+
+        log_content = (tmp_path / "llm.jsonl").read_text()
+        assert "api_response" in log_content
+        assert "Deep analysis of the position" in log_content
+
+    async def test_thinking_logged_on_retry(
+        self, server: MockChessServer, tmp_path: Path
+    ) -> None:
+        """Logging doesn't crash when thinking blocks are in retry messages.
+
+        Thinking blocks are SDK objects (not dicts) in the messages list.
+        The logger must handle serializing them when logging the request
+        payload on the second iteration of the tool-use loop.
+        """
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.side_effect = [
+            make_thinking_tool_response("Try e5.", "make_move", {"move": "e2e5"}),
+            make_thinking_tool_response("Try e4.", "make_move", {"move": "e4"}),
+        ]
+
+        llm_logger = LlmInteractionLogger(tmp_path / "llm.jsonl")
+        result = await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            llm_logger=llm_logger,
+            thinking_budget=2048,
+        )
+
+        assert result is True
+        # Should have logged 4 entries: request, response, request, response
+        log_lines = (tmp_path / "llm.jsonl").read_text().strip().split("\n")
+        assert len(log_lines) == 4
 
 
 class TestChessTools:

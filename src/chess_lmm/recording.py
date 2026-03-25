@@ -227,6 +227,16 @@ class RecordingClient:
         )
 
 
+def _json_default(obj: Any) -> Any:
+    """JSON fallback for SDK objects (e.g. Anthropic ThinkingBlock).
+
+    Tries model_dump() (Pydantic), then falls back to str().
+    """
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    return str(obj)
+
+
 class LlmInteractionLogger:
     """Logs full Anthropic API request/response pairs to JSON-lines.
 
@@ -242,7 +252,14 @@ class LlmInteractionLogger:
         """Write a single interaction record."""
         entry.setdefault("ts_ms", int(time.time() * 1000))
         with open(self._path, "a") as f:
-            f.write(json.dumps(entry, separators=(",", ":")) + "\n")
+            f.write(
+                json.dumps(
+                    entry,
+                    separators=(",", ":"),
+                    default=_json_default,
+                )
+                + "\n"
+            )
 
 
 def render_board(fen: str) -> str:

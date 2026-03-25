@@ -61,6 +61,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Enable verbose logging",
     )
 
+    parser.add_argument(
+        "--thinking-budget",
+        type=int,
+        default=None,
+        help="Token budget for extended thinking (default: disabled)",
+    )
+
     server_group = parser.add_mutually_exclusive_group()
     server_group.add_argument(
         "--server-url",
@@ -210,6 +217,7 @@ async def run_game(
                     anthropic_client,
                     args.model,
                     llm_logger=llm_interaction_logger,
+                    thinking_budget=args.thinking_budget,
                 )
 
                 if game_ongoing:
