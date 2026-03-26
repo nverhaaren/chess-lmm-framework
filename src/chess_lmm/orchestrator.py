@@ -68,6 +68,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Token budget for extended thinking (default: disabled)",
     )
 
+    parser.add_argument(
+        "--max-history",
+        type=int,
+        default=40,
+        help="Maximum conversation messages to keep (default: 40)",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        default=False,
+        help="Disable prompt caching",
+    )
+
     server_group = parser.add_mutually_exclusive_group()
     server_group.add_argument(
         "--server-url",
@@ -178,6 +191,7 @@ async def run_game(
         # Game loop
         game_ongoing = True
         is_human_turn = human_goes_first
+        conversation_history: list[dict[str, Any]] = []
 
         while game_ongoing:
             # Check game status
@@ -212,13 +226,18 @@ async def run_game(
                 )
             else:
                 write("\nClaude is thinking...")
-                game_ongoing = await llm_turn(
+                llm_result = await llm_turn(
                     llm_client,
                     anthropic_client,
                     args.model,
                     llm_logger=llm_interaction_logger,
                     thinking_budget=args.thinking_budget,
+                    conversation_history=conversation_history,
+                    enable_cache=not args.no_cache,
+                    max_history=args.max_history,
                 )
+                game_ongoing = llm_result.game_ongoing
+                conversation_history = llm_result.messages
 
                 if game_ongoing:
                     # Show Claude's move

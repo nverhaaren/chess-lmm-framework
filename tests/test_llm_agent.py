@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-from chess_lmm.llm_agent import CHESS_TOOLS, _build_position_context, llm_turn
+from chess_lmm.llm_agent import (
+    CHESS_TOOLS,
+    LlmTurnResult,
+    _build_position_context,
+    _truncate_history,
+    llm_turn,
+)
 from chess_lmm.mock_server import MockChessServer
 from chess_lmm.recording import LlmInteractionLogger
 
@@ -165,7 +172,7 @@ class TestLlmTurn:
 
         result = await llm_turn(white, mock_anthropic, "test-model")
 
-        assert result is True
+        assert result.game_ongoing is True
         # Verify the move was made
         status = await white.get_status()
         assert status["turn"] == "black"
@@ -182,7 +189,7 @@ class TestLlmTurn:
 
         result = await llm_turn(white, mock_anthropic, "test-model")
 
-        assert result is True
+        assert result.game_ongoing is True
         assert mock_anthropic.messages.create.call_count == 2
 
     async def test_handles_illegal_move_error(self, server: MockChessServer) -> None:
@@ -197,7 +204,7 @@ class TestLlmTurn:
 
         result = await llm_turn(white, mock_anthropic, "test-model")
 
-        assert result is True
+        assert result.game_ongoing is True
         assert mock_anthropic.messages.create.call_count == 2
 
     async def test_resign(self, server: MockChessServer) -> None:
@@ -211,7 +218,7 @@ class TestLlmTurn:
 
         result = await llm_turn(white, mock_anthropic, "test-model")
 
-        assert result is False
+        assert result.game_ongoing is False
 
     async def test_game_already_over(self, server: MockChessServer) -> None:
         """Returns False when game is already over."""
@@ -221,7 +228,7 @@ class TestLlmTurn:
         mock_anthropic = MagicMock()
         result = await llm_turn(white, mock_anthropic, "test-model")
 
-        assert result is False
+        assert result.game_ongoing is False
         mock_anthropic.messages.create.assert_not_called()
 
     async def test_logs_to_llm_logger(
@@ -264,7 +271,7 @@ class TestThinking:
             thinking_budget=2048,
         )
 
-        assert result is True
+        assert result.game_ongoing is True
         status = await white.get_status()
         assert status["turn"] == "black"
 
@@ -338,7 +345,7 @@ class TestThinking:
             thinking_budget=2048,
         )
 
-        assert result is True
+        assert result.game_ongoing is True
         assert mock_anthropic.messages.create.call_count == 2
 
         # Check the second API call's messages contain the thinking
@@ -385,7 +392,7 @@ class TestThinking:
             thinking_budget=2048,
         )
 
-        assert result is True
+        assert result.game_ongoing is True
         assert mock_anthropic.messages.create.call_count == 2
         status = await white.get_status()
         assert status["turn"] == "black"
@@ -455,10 +462,401 @@ class TestThinking:
             thinking_budget=2048,
         )
 
-        assert result is True
+        assert result.game_ongoing is True
         # Should have logged 4 entries: request, response, request, response
         log_lines = (tmp_path / "llm.jsonl").read_text().strip().split("\n")
         assert len(log_lines) == 4
+
+
+class TestHistory:
+    """Tests for persistent conversation history."""
+
+    async def test_history_passed_through(self, server: MockChessServer) -> None:
+        """conversation_history is included in the API call messages."""
+        white, black = await _setup_game(server)
+
+        prior = [
+            {"role": "user", "content": "prior position context"},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "prior response"}],
+            },
+        ]
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_tool_use_response(
+            "make_move", {"move": "e4"}
+        )
+
+        await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            conversation_history=prior,
+            enable_cache=False,
+        )
+
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        msgs = call_kwargs["messages"]
+        # First two messages are from history, third is position context
+        assert msgs[0]["content"] == "prior position context"
+        assert msgs[1]["role"] == "assistant"
+
+    async def test_history_returned(self, server: MockChessServer) -> None:
+        """result.messages includes position context, assistant, and tool_result."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_tool_use_response(
+            "make_move", {"move": "e4"}
+        )
+
+        result = await llm_turn(white, mock_anthropic, "test-model", enable_cache=False)
+
+        assert isinstance(result, LlmTurnResult)
+        msgs = result.messages
+        # user (position), assistant (tool_use), user (tool_result)
+        assert len(msgs) >= 3
+        assert msgs[0]["role"] == "user"
+        assert msgs[1]["role"] == "assistant"
+        assert msgs[2]["role"] == "user"
+
+    async def test_history_accumulates(self, server: MockChessServer) -> None:
+        """History from first turn appears in second turn's API call."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_tool_use_response(
+            "make_move", {"move": "e4"}
+        )
+
+        r1 = await llm_turn(white, mock_anthropic, "test-model", enable_cache=False)
+
+        # Black plays
+        await black.make_move("e5")
+
+        mock_anthropic.messages.create.return_value = make_tool_use_response(
+            "make_move", {"move": "Nf3"}
+        )
+
+        r2 = await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            conversation_history=r1.messages,
+            enable_cache=False,
+        )
+
+        # Second turn should have more messages than first
+        assert len(r2.messages) > len(r1.messages)
+        # Second API call should have history from first turn
+        second_call_msgs = mock_anthropic.messages.create.call_args[1]["messages"]
+        assert len(second_call_msgs) > 3  # more than just this turn
+
+    async def test_game_already_over_returns_history(
+        self, server: MockChessServer
+    ) -> None:
+        """Early return when game is over returns incoming history."""
+        white, black = await _setup_game(server)
+        await white.resign()
+
+        prior = [{"role": "user", "content": "old context"}]
+        mock_anthropic = MagicMock()
+
+        result = await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            conversation_history=prior,
+        )
+
+        assert result.game_ongoing is False
+        assert result.messages == prior
+        mock_anthropic.messages.create.assert_not_called()
+
+    async def test_game_already_over_no_history(self, server: MockChessServer) -> None:
+        """Early return with no history returns empty list."""
+        white, black = await _setup_game(server)
+        await white.resign()
+
+        mock_anthropic = MagicMock()
+        result = await llm_turn(white, mock_anthropic, "test-model")
+
+        assert result.game_ongoing is False
+        assert result.messages == []
+
+    async def test_max_history_too_small(self, server: MockChessServer) -> None:
+        """max_history < 2 raises ValueError."""
+        white, black = await _setup_game(server)
+        mock_anthropic = MagicMock()
+
+        with pytest.raises(ValueError, match="max_history must be"):
+            await llm_turn(
+                white,
+                mock_anthropic,
+                "test-model",
+                max_history=1,
+            )
+
+
+class TestTruncateHistory:
+    """Tests for _truncate_history."""
+
+    def test_no_truncation_needed(self) -> None:
+        msgs: list[dict[str, Any]] = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+        ]
+        result = _truncate_history(msgs, 10)
+        assert result is msgs  # same object, no copy
+
+    def test_truncation_prepends_note(self) -> None:
+        msgs: list[dict[str, Any]] = [
+            {"role": "user", "content": f"turn {i}"} for i in range(20)
+        ]
+        result = _truncate_history(msgs, 5)
+        assert len(result) <= 6  # note + up to 5
+        assert "omitted" in result[0]["content"].lower()
+        assert result[0]["role"] == "user"
+
+    def test_truncation_respects_turn_boundaries(self) -> None:
+        """Don't orphan a tool_result without its tool_use."""
+        msgs: list[dict[str, Any]] = [
+            # Turn 1: position context (string)
+            {"role": "user", "content": "position 1"},
+            # Turn 1: assistant with tool_use
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "make_move",
+                        "input": {"move": "e4"},
+                    }
+                ],
+            },
+            # Turn 1: tool_result (list content)
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": "{}",
+                    }
+                ],
+            },
+            # Turn 2: position context (string)
+            {"role": "user", "content": "position 2"},
+            # Turn 2: assistant
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "t2",
+                        "name": "make_move",
+                        "input": {"move": "d4"},
+                    }
+                ],
+            },
+            # Turn 2: tool_result
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t2",
+                        "content": "{}",
+                    }
+                ],
+            },
+        ]
+        # max_messages=4 — naive cut at index 2 lands on tool_result
+        # Should walk forward to index 3 (position context string)
+        result = _truncate_history(msgs, 4)
+        # First message is the note
+        assert "omitted" in result[0]["content"].lower()
+        # Second message should be a position context, not a tool_result
+        assert isinstance(result[1]["content"], str)
+
+    def test_truncation_exactly_at_limit(self) -> None:
+        msgs: list[dict[str, Any]] = [
+            {"role": "user", "content": f"turn {i}"} for i in range(5)
+        ]
+        result = _truncate_history(msgs, 5)
+        assert result is msgs
+
+
+class TestCaching:
+    """Tests for prompt caching support."""
+
+    async def test_cache_control_on_system(self, server: MockChessServer) -> None:
+        """System prompt is a list with cache_control when caching enabled."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_tool_use_response(
+            "make_move", {"move": "e4"}
+        )
+
+        await llm_turn(white, mock_anthropic, "test-model", enable_cache=True)
+
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        system = call_kwargs["system"]
+        assert isinstance(system, list)
+        assert system[0]["cache_control"] == {"type": "ephemeral"}
+
+    async def test_cache_control_on_tools(self, server: MockChessServer) -> None:
+        """Last tool has cache_control; CHESS_TOOLS is not mutated."""
+        tools_before = copy.deepcopy(CHESS_TOOLS)
+
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_tool_use_response(
+            "make_move", {"move": "e4"}
+        )
+
+        await llm_turn(white, mock_anthropic, "test-model", enable_cache=True)
+
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        tools = call_kwargs["tools"]
+        assert "cache_control" in tools[-1]
+        # Original constant not mutated
+        assert tools_before == CHESS_TOOLS
+
+    async def test_cache_control_on_history_frontier(
+        self, server: MockChessServer
+    ) -> None:
+        """Last user message in history gets cache_control."""
+        white, black = await _setup_game(server)
+
+        prior = [
+            {"role": "user", "content": "old position"},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "response"}],
+            },
+        ]
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_tool_use_response(
+            "make_move", {"move": "e4"}
+        )
+
+        await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            conversation_history=prior,
+            enable_cache=True,
+        )
+
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        msgs = call_kwargs["messages"]
+        # The first user message (from history) should have cache_control
+        first_user = msgs[0]
+        content = first_user["content"]
+        if isinstance(content, list):
+            assert content[-1].get("cache_control") == {"type": "ephemeral"}
+        else:
+            # Should not happen — string content gets converted to list
+            pytest.fail("Expected list content with cache_control")
+
+    async def test_stale_cache_control_stripped(self, server: MockChessServer) -> None:
+        """Old cache_control markers are stripped before marking new frontier."""
+        white, black = await _setup_game(server)
+
+        prior = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "old",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "resp"}],
+            },
+            {"role": "user", "content": "newer position"},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "resp2"}],
+            },
+        ]
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_tool_use_response(
+            "make_move", {"move": "e4"}
+        )
+
+        await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            conversation_history=prior,
+            enable_cache=True,
+        )
+
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        msgs = call_kwargs["messages"]
+
+        # First user message should have cache_control stripped
+        first_user_content = msgs[0]["content"]
+        if isinstance(first_user_content, list):
+            assert "cache_control" not in first_user_content[0]
+
+        # The frontier (last user msg before new position) should have it
+        # That's msgs[2] ("newer position"), which becomes a list with cc
+        frontier = msgs[2]
+        fc = frontier["content"]
+        if isinstance(fc, list):
+            assert fc[-1].get("cache_control") == {"type": "ephemeral"}
+
+    async def test_no_cache(self, server: MockChessServer) -> None:
+        """No cache_control anywhere when enable_cache=False."""
+        white, black = await _setup_game(server)
+
+        prior = [
+            {"role": "user", "content": "old position"},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "resp"}],
+            },
+        ]
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_tool_use_response(
+            "make_move", {"move": "e4"}
+        )
+
+        await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            conversation_history=prior,
+            enable_cache=False,
+        )
+
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        # System is a plain string
+        assert isinstance(call_kwargs["system"], str)
+        # No cache_control on tools
+        for tool in call_kwargs["tools"]:
+            assert "cache_control" not in tool
+        # No cache_control on messages
+        for msg in call_kwargs["messages"]:
+            content = msg["content"]
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        assert "cache_control" not in block
 
 
 class TestChessTools:

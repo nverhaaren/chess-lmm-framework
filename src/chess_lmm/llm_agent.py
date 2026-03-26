@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from chess_lmm.mcp_interface import ChessSessionClient
@@ -127,6 +128,76 @@ def _build_position_context(
     return "\n".join(parts)
 
 
+@dataclass
+class LlmTurnResult:
+    """Return value from llm_turn()."""
+
+    game_ongoing: bool
+    messages: list[dict[str, Any]]
+
+
+def _strip_cache_control(messages: list[dict[str, Any]]) -> None:
+    """Remove cache_control from all user messages."""
+    for msg in messages:
+        if msg["role"] != "user":
+            continue
+        content = msg["content"]
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    block.pop("cache_control", None)
+
+
+def _add_cache_control(message: dict[str, Any]) -> None:
+    """Add cache_control to a user message's last content block."""
+    content = message["content"]
+    if isinstance(content, str):
+        message["content"] = [
+            {
+                "type": "text",
+                "text": content,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    elif isinstance(content, list) and content:
+        last_block = content[-1]
+        if isinstance(last_block, dict):
+            last_block["cache_control"] = {"type": "ephemeral"}
+
+
+def _truncate_history(
+    messages: list[dict[str, Any]],
+    max_messages: int,
+) -> list[dict[str, Any]]:
+    """Truncate history to at most max_messages, respecting turn boundaries.
+
+    Walks forward from the naive cut point to find a position-context
+    user message (string content) to avoid orphaning tool_result messages.
+    """
+    if len(messages) <= max_messages:
+        return messages
+    # Find a safe cut point
+    cut = len(messages) - max_messages
+    while cut < len(messages):
+        msg = messages[cut]
+        if msg["role"] == "user" and isinstance(msg["content"], str):
+            break
+        cut += 1
+    if cut >= len(messages):
+        # Can't find a safe boundary — keep everything
+        return messages
+    truncated = messages[cut:]
+    note: dict[str, Any] = {
+        "role": "user",
+        "content": (
+            "[Earlier moves and analysis have been omitted. "
+            "The current position and legal moves are "
+            "provided below.]"
+        ),
+    }
+    return [note, *truncated]
+
+
 async def llm_turn(
     client: ChessSessionClient,
     anthropic_client: Any,
@@ -136,18 +207,25 @@ async def llm_turn(
     system_prompt: str | None = None,
     conversation_history: list[dict[str, Any]] | None = None,
     thinking_budget: int | None = None,
-) -> bool:
+    enable_cache: bool = True,
+    max_history: int = 40,
+) -> LlmTurnResult:
     """Handle one turn for the LLM agent.
 
-    Returns True if the game is still ongoing, False if it ended.
+    Returns LlmTurnResult with game_ongoing flag and updated messages.
 
     Args:
         thinking_budget: Token budget for extended thinking. Must be >= 1024
             if set. When enabled, max_tokens is automatically increased to
             accommodate both thinking and output.
+        enable_cache: Add cache_control breakpoints to system prompt,
+            tools, and history frontier for prompt caching.
+        max_history: Maximum messages to keep in history. Must be >= 2.
     """
     if thinking_budget is not None and thinking_budget < 1024:
         raise ValueError("thinking_budget must be >= 1024")
+    if max_history < 2:
+        raise ValueError("max_history must be >= 2")
 
     # 1. Query current state
     status = await client.get_status()
@@ -156,7 +234,10 @@ async def llm_turn(
 
     # Check if game already ended
     if status.get("server_state") == "game_over":
-        return False
+        return LlmTurnResult(
+            game_ongoing=False,
+            messages=conversation_history or [],
+        )
 
     # 2. Build the context message
     position_context = _build_position_context(
@@ -170,23 +251,50 @@ async def llm_turn(
             "SAN notation. Think carefully about tactics and strategy."
         )
 
+    # 3. Build messages: history → truncate → cache → new position
     messages: list[dict[str, Any]] = []
     if conversation_history:
         messages.extend(conversation_history)
+    messages = _truncate_history(messages, max_history)
+
+    if enable_cache and messages:
+        _strip_cache_control(messages)
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i]["role"] == "user":
+                _add_cache_control(messages[i])
+                break
+
     messages.append({"role": "user", "content": position_context})
+
+    # 4. Build system prompt and tools (with optional caching)
+    system_value: Any
+    if enable_cache:
+        system_value = [
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    else:
+        system_value = system_prompt
+
+    tools = [dict(t) for t in CHESS_TOOLS]
+    if enable_cache and tools:
+        tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
 
     # Compute max_tokens based on whether thinking is enabled
     max_tokens = thinking_budget + 1024 if thinking_budget is not None else 1024
 
-    # 3. Call Claude with tools
+    # 5. Call Claude with tools
     max_iterations = 5  # Safety limit for tool-use loop
     for _ in range(max_iterations):
         request_payload: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
-            "system": system_prompt,
+            "system": system_value,
             "messages": messages,
-            "tools": CHESS_TOOLS,
+            "tools": tools,
         }
         if thinking_budget is not None:
             request_payload["thinking"] = {
@@ -278,15 +386,15 @@ async def llm_turn(
         messages.append({"role": "user", "content": tool_results})
 
         if game_ended:
-            return False
+            return LlmTurnResult(game_ongoing=False, messages=messages)
 
         # If a move was successfully made, we're done
         for tr in tool_results:
             if not tr.get("is_error"):
-                return True
+                return LlmTurnResult(game_ongoing=True, messages=messages)
 
     logger.warning("LLM turn exceeded max iterations")
-    return True
+    return LlmTurnResult(game_ongoing=True, messages=messages)
 
 
 async def _execute_tool(
