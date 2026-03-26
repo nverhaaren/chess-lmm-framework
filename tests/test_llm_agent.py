@@ -598,6 +598,46 @@ class TestHistory:
                 max_history=1,
             )
 
+    async def test_history_truncated_through_llm_turn(
+        self, server: MockChessServer
+    ) -> None:
+        """History exceeding max_history is truncated with a note prepended."""
+        white, black = await _setup_game(server)
+
+        # Build a history with 10 turn pairs (20 messages)
+        prior: list[dict[str, Any]] = []
+        for i in range(10):
+            prior.append({"role": "user", "content": f"position {i}"})
+            prior.append(
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": f"analysis {i}"}],
+                }
+            )
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_tool_use_response(
+            "make_move", {"move": "e4"}
+        )
+
+        await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            conversation_history=prior,
+            max_history=6,
+            enable_cache=False,
+        )
+
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        msgs = call_kwargs["messages"]
+        # First message should be the truncation note
+        assert "omitted" in msgs[0]["content"].lower()
+        # Messages list is mutated after the API call (assistant + tool_result
+        # appended), so total = note + kept + position + assistant + tool_result.
+        # Key check: significantly fewer than the original 20 + extras.
+        assert len(msgs) < 20
+
 
 class TestTruncateHistory:
     """Tests for _truncate_history."""
