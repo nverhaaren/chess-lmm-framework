@@ -417,14 +417,38 @@ def _validate_tool_input(
                 ),
             },
         }
-    if tool_name == "make_move" and "move" not in tool_input:
-        return {
-            "is_error": True,
-            "error": {
-                "error": "invalid_params",
-                "message": "make_move requires a 'move' parameter",
-            },
-        }
+    if tool_name == "make_move":
+        if "move" not in tool_input:
+            return {
+                "is_error": True,
+                "error": {
+                    "error": "invalid_params",
+                    "message": "make_move requires a 'move' parameter",
+                },
+            }
+        if not isinstance(tool_input["move"], str):
+            return {
+                "is_error": True,
+                "error": {
+                    "error": "invalid_params",
+                    "message": (
+                        f"'move' must be a string, "
+                        f"got {type(tool_input['move']).__name__}"
+                    ),
+                },
+            }
+        extra = set(tool_input.keys()) - {"move"}
+        if extra:
+            return {
+                "is_error": True,
+                "error": {
+                    "error": "invalid_params",
+                    "message": (
+                        f"make_move only accepts 'move', "
+                        f"got extra: {', '.join(sorted(extra))}"
+                    ),
+                },
+            }
     if tool_name in _NO_PARAM_TOOLS and tool_input:
         return {
             "is_error": True,

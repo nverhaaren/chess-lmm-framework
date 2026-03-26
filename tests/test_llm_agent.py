@@ -293,6 +293,44 @@ class TestLlmTurn:
         error_msg = result.messages[2]
         assert error_msg["content"][0]["is_error"] is True
 
+    async def test_handles_non_string_move(
+        self, server: MockChessServer
+    ) -> None:
+        """LLM sends move as integer instead of string, gets error."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.side_effect = [
+            make_tool_use_response("make_move", {"move": 4}),
+            make_tool_use_response("make_move", {"move": "e4"}),
+        ]
+
+        result = await llm_turn(white, mock_anthropic, "test-model")
+
+        assert result.game_ongoing is True
+        assert mock_anthropic.messages.create.call_count == 2
+        error_msg = result.messages[2]
+        assert error_msg["content"][0]["is_error"] is True
+
+    async def test_handles_extra_keys_on_make_move(
+        self, server: MockChessServer
+    ) -> None:
+        """LLM sends extra keys alongside 'move', gets error."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.side_effect = [
+            make_tool_use_response("make_move", {"move": "e4", "reason": "central"}),
+            make_tool_use_response("make_move", {"move": "e4"}),
+        ]
+
+        result = await llm_turn(white, mock_anthropic, "test-model")
+
+        assert result.game_ongoing is True
+        assert mock_anthropic.messages.create.call_count == 2
+        error_msg = result.messages[2]
+        assert error_msg["content"][0]["is_error"] is True
+
     async def test_resign(self, server: MockChessServer) -> None:
         """LLM resigns the game."""
         white, black = await _setup_game(server)
