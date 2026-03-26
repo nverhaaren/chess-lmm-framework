@@ -397,12 +397,58 @@ async def llm_turn(
     return LlmTurnResult(game_ongoing=True, messages=messages)
 
 
+_NO_PARAM_TOOLS = frozenset(
+    {"offer_draw", "claim_draw", "accept_draw", "decline_draw", "resign"}
+)
+
+
+def _validate_tool_input(
+    tool_name: str, tool_input: Any
+) -> dict[str, Any] | None:
+    """Validate tool input, returning an error dict if invalid, or None if OK."""
+    if not isinstance(tool_input, dict):
+        return {
+            "is_error": True,
+            "error": {
+                "error": "invalid_params",
+                "message": (
+                    f"Expected object for {tool_name} input, "
+                    f"got {type(tool_input).__name__}"
+                ),
+            },
+        }
+    if tool_name == "make_move" and "move" not in tool_input:
+        return {
+            "is_error": True,
+            "error": {
+                "error": "invalid_params",
+                "message": "make_move requires a 'move' parameter",
+            },
+        }
+    if tool_name in _NO_PARAM_TOOLS and tool_input:
+        return {
+            "is_error": True,
+            "error": {
+                "error": "invalid_params",
+                "message": (
+                    f"{tool_name} takes no parameters, "
+                    f"got: {', '.join(tool_input.keys())}"
+                ),
+            },
+        }
+    return None
+
+
 async def _execute_tool(
     client: ChessSessionClient,
     tool_name: str,
-    tool_input: dict[str, Any],
+    tool_input: Any,
 ) -> dict[str, Any]:
     """Execute a chess tool call via the MCP client."""
+    validation_error = _validate_tool_input(tool_name, tool_input)
+    if validation_error is not None:
+        return validation_error
+
     try:
         tool_result: Any
         if tool_name == "make_move":
@@ -426,14 +472,6 @@ async def _execute_tool(
                 },
             }
         return {"result": dict(tool_result)}
-    except (KeyError, TypeError) as e:
-        return {
-            "is_error": True,
-            "error": {
-                "error": "invalid_params",
-                "message": f"Invalid tool input: {e}",
-            },
-        }
     except McpError as e:
         return {"is_error": True, "error": e.to_dict()}
 

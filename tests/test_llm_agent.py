@@ -272,6 +272,27 @@ class TestLlmTurn:
         error_msg = result.messages[2]
         assert error_msg["content"][0]["is_error"] is True
 
+    async def test_handles_unexpected_params_on_no_param_tool(
+        self, server: MockChessServer
+    ) -> None:
+        """LLM sends unexpected parameters to a no-param tool, gets error."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.side_effect = [
+            # resign with spurious params
+            make_tool_use_response("resign", {"move": "e4"}),
+            # retry correctly
+            make_tool_use_response("resign", {}),
+        ]
+
+        result = await llm_turn(white, mock_anthropic, "test-model")
+
+        assert result.game_ongoing is False
+        assert mock_anthropic.messages.create.call_count == 2
+        error_msg = result.messages[2]
+        assert error_msg["content"][0]["is_error"] is True
+
     async def test_resign(self, server: MockChessServer) -> None:
         """LLM resigns the game."""
         white, black = await _setup_game(server)
