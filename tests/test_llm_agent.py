@@ -228,6 +228,50 @@ class TestLlmTurn:
         assert error_msg["content"][0]["is_error"] is True
         assert "move" in error_msg["content"][0]["content"].lower()
 
+    async def test_handles_null_tool_input(
+        self, server: MockChessServer
+    ) -> None:
+        """LLM sends tool_use with null/None input, gets error, then retries."""
+        white, black = await _setup_game(server)
+
+        null_response = MockResponse(
+            [MockContentBlock("tool_use", id="t1", name="make_move", input=None)]
+        )
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.side_effect = [
+            null_response,
+            make_tool_use_response("make_move", {"move": "e4"}),
+        ]
+
+        result = await llm_turn(white, mock_anthropic, "test-model")
+
+        assert result.game_ongoing is True
+        assert mock_anthropic.messages.create.call_count == 2
+        error_msg = result.messages[2]
+        assert error_msg["content"][0]["is_error"] is True
+
+    async def test_handles_non_dict_tool_input(
+        self, server: MockChessServer
+    ) -> None:
+        """LLM sends tool_use with string input instead of object."""
+        white, black = await _setup_game(server)
+
+        bad_response = MockResponse(
+            [MockContentBlock("tool_use", id="t1", name="make_move", input="e4")]
+        )
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.side_effect = [
+            bad_response,
+            make_tool_use_response("make_move", {"move": "e4"}),
+        ]
+
+        result = await llm_turn(white, mock_anthropic, "test-model")
+
+        assert result.game_ongoing is True
+        assert mock_anthropic.messages.create.call_count == 2
+        error_msg = result.messages[2]
+        assert error_msg["content"][0]["is_error"] is True
+
     async def test_resign(self, server: MockChessServer) -> None:
         """LLM resigns the game."""
         white, black = await _setup_game(server)
