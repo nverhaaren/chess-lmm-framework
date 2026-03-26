@@ -228,9 +228,7 @@ class TestLlmTurn:
         assert error_msg["content"][0]["is_error"] is True
         assert "move" in error_msg["content"][0]["content"].lower()
 
-    async def test_handles_null_tool_input(
-        self, server: MockChessServer
-    ) -> None:
+    async def test_handles_null_tool_input(self, server: MockChessServer) -> None:
         """LLM sends tool_use with null/None input, gets error, then retries."""
         white, black = await _setup_game(server)
 
@@ -250,9 +248,7 @@ class TestLlmTurn:
         error_msg = result.messages[2]
         assert error_msg["content"][0]["is_error"] is True
 
-    async def test_handles_non_dict_tool_input(
-        self, server: MockChessServer
-    ) -> None:
+    async def test_handles_non_dict_tool_input(self, server: MockChessServer) -> None:
         """LLM sends tool_use with string input instead of object."""
         white, black = await _setup_game(server)
 
@@ -293,9 +289,7 @@ class TestLlmTurn:
         error_msg = result.messages[2]
         assert error_msg["content"][0]["is_error"] is True
 
-    async def test_handles_non_string_move(
-        self, server: MockChessServer
-    ) -> None:
+    async def test_handles_non_string_move(self, server: MockChessServer) -> None:
         """LLM sends move as integer instead of string, gets error."""
         white, black = await _setup_game(server)
 

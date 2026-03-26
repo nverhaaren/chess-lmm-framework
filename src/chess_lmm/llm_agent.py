@@ -402,9 +402,7 @@ _NO_PARAM_TOOLS = frozenset(
 )
 
 
-def _validate_tool_input(
-    tool_name: str, tool_input: Any
-) -> dict[str, Any] | None:
+def _validate_tool_input(tool_name: str, tool_input: Any) -> dict[str, Any] | None:
     """Validate tool input, returning an error dict if invalid, or None if OK."""
     if not isinstance(tool_input, dict):
         return {
