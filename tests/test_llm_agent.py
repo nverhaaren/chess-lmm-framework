@@ -207,6 +207,27 @@ class TestLlmTurn:
         assert result.game_ongoing is True
         assert mock_anthropic.messages.create.call_count == 2
 
+    async def test_handles_missing_move_parameter(
+        self, server: MockChessServer
+    ) -> None:
+        """LLM calls make_move without 'move' key, gets error, then retries."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.side_effect = [
+            make_tool_use_response("make_move", {}),  # missing 'move' key
+            make_tool_use_response("make_move", {"move": "e4"}),
+        ]
+
+        result = await llm_turn(white, mock_anthropic, "test-model")
+
+        assert result.game_ongoing is True
+        assert mock_anthropic.messages.create.call_count == 2
+        # The error tool_result from the first call is at index 2 in history
+        error_msg = result.messages[2]
+        assert error_msg["content"][0]["is_error"] is True
+        assert "move" in error_msg["content"][0]["content"].lower()
+
     async def test_resign(self, server: MockChessServer) -> None:
         """LLM resigns the game."""
         white, black = await _setup_game(server)

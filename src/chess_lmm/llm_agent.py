@@ -426,6 +426,14 @@ async def _execute_tool(
                 },
             }
         return {"result": dict(tool_result)}
+    except KeyError as e:
+        return {
+            "is_error": True,
+            "error": {
+                "error": "invalid_params",
+                "message": f"Missing required parameter: {e}",
+            },
+        }
     except McpError as e:
         return {"is_error": True, "error": e.to_dict()}
 
