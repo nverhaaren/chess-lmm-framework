@@ -136,24 +136,27 @@ class LlmTurnResult:
     messages: list[dict[str, Any]]
 
 
-_ADAPTIVE_EFFORTS = frozenset({"low", "medium", "high", "max"})
-
-# Default max_tokens for adaptive thinking (model decides thinking/output split)
-_ADAPTIVE_MAX_TOKENS = 16384
+_ADAPTIVE_MAX_TOKENS: dict[str, int] = {
+    "low": 4096,
+    "medium": 8192,
+    "high": 16384,
+    "max": 32768,
+}
 
 
 def resolve_thinking(value: str) -> dict[str, Any] | None:
     """Resolve a CLI thinking value to an API thinking config dict.
 
     Accepts: "off", "low", "medium", "high", "max", or an integer string
-    (manual budget_tokens).
+    (manual budget_tokens). Case-insensitive, whitespace-trimmed.
 
     Returns None for "off", or a thinking config dict.
     """
-    if value == "off":
+    normalized = value.strip().lower()
+    if normalized == "off":
         return None
-    if value in _ADAPTIVE_EFFORTS:
-        config: dict[str, Any] = {"type": "adaptive", "effort": value}
+    if normalized in _ADAPTIVE_MAX_TOKENS:
+        config: dict[str, Any] = {"type": "adaptive", "effort": normalized}
         return config
     try:
         budget = int(value)
@@ -323,8 +326,9 @@ async def llm_turn(
     elif "budget_tokens" in thinking:
         max_tokens = thinking["budget_tokens"] + 1024
     else:
-        # Adaptive thinking — model decides the split
-        max_tokens = _ADAPTIVE_MAX_TOKENS
+        # Adaptive thinking — scale by effort level
+        effort = thinking.get("effort", "high")
+        max_tokens = _ADAPTIVE_MAX_TOKENS.get(effort, 16384)
 
     # 5. Call Claude with tools
     max_iterations = 5  # Safety limit for tool-use loop

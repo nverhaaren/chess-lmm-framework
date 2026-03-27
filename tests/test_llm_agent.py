@@ -418,7 +418,7 @@ class TestThinking:
         assert call_kwargs["max_tokens"] == 11024
 
     async def test_adaptive_thinking_in_request(self, server: MockChessServer) -> None:
-        """Adaptive thinking sets generous max_tokens."""
+        """Adaptive thinking with effort sets correct max_tokens."""
         white, black = await _setup_game(server)
 
         mock_anthropic = MagicMock()
@@ -430,12 +430,54 @@ class TestThinking:
             white,
             mock_anthropic,
             "test-model",
-            thinking={"type": "adaptive"},
+            thinking={"type": "adaptive", "effort": "high"},
         )
 
         call_kwargs = mock_anthropic.messages.create.call_args[1]
-        assert call_kwargs["thinking"] == {"type": "adaptive"}
+        assert call_kwargs["thinking"] == {"type": "adaptive", "effort": "high"}
         assert call_kwargs["max_tokens"] == 16384
+
+    async def test_adaptive_max_effort_max_tokens(
+        self, server: MockChessServer
+    ) -> None:
+        """Max effort gets higher max_tokens than high."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_thinking_tool_response(
+            "Analysis...", "make_move", {"move": "e4"}
+        )
+
+        await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            thinking={"type": "adaptive", "effort": "max"},
+        )
+
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        assert call_kwargs["max_tokens"] == 32768
+
+    async def test_adaptive_low_effort_max_tokens(
+        self, server: MockChessServer
+    ) -> None:
+        """Low effort gets smaller max_tokens."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_thinking_tool_response(
+            "Analysis...", "make_move", {"move": "e4"}
+        )
+
+        await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            thinking={"type": "adaptive", "effort": "low"},
+        )
+
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        assert call_kwargs["max_tokens"] == 4096
 
     async def test_thinking_disabled_by_default(self, server: MockChessServer) -> None:
         """Without thinking, no thinking param and max_tokens=1024."""
@@ -640,6 +682,30 @@ class TestResolveThinking:
     def test_invalid_string(self) -> None:
         with pytest.raises(ValueError, match="Invalid thinking"):
             resolve_thinking("turbo")
+
+    def test_case_insensitive(self) -> None:
+        assert resolve_thinking("HIGH") == {"type": "adaptive", "effort": "high"}
+        assert resolve_thinking("Off") == None  # noqa: E711
+        assert resolve_thinking("LOW") == {"type": "adaptive", "effort": "low"}
+
+    def test_whitespace_stripped(self) -> None:
+        assert resolve_thinking("  high  ") == {"type": "adaptive", "effort": "high"}
+        assert resolve_thinking(" 10000 ") == {
+            "type": "enabled",
+            "budget_tokens": 10000,
+        }
+
+    def test_minimum_valid_budget(self) -> None:
+        result = resolve_thinking("1024")
+        assert result == {"type": "enabled", "budget_tokens": 1024}
+
+    def test_just_below_minimum_budget(self) -> None:
+        with pytest.raises(ValueError, match="budget_tokens must be"):
+            resolve_thinking("1023")
+
+    def test_negative_budget(self) -> None:
+        with pytest.raises(ValueError, match="budget_tokens must be"):
+            resolve_thinking("-5")
 
 
 class TestHistory:
