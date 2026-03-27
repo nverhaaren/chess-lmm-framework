@@ -33,6 +33,8 @@ class TestParseArgs:
         assert args.fen is None
         assert args.log_dir == Path("./game-logs")
         assert args.thinking_budget is None
+        assert args.max_history == 40
+        assert args.no_cache is False
 
     def test_custom_args(self) -> None:
         args = parse_args(
@@ -59,6 +61,14 @@ class TestParseArgs:
     def test_thinking_budget_default_none(self) -> None:
         args = parse_args([])
         assert args.thinking_budget is None
+
+    def test_max_history(self) -> None:
+        args = parse_args(["--max-history", "20"])
+        assert args.max_history == 20
+
+    def test_no_cache(self) -> None:
+        args = parse_args(["--no-cache"])
+        assert args.no_cache is True
 
 
 class TestRunGame:
