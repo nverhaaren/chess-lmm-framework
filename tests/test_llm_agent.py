@@ -443,9 +443,7 @@ class TestThinking:
         assert call_kwargs["max_tokens"] == 16384
         assert call_kwargs["output_config"] == {"effort": "high"}
 
-    async def test_resolve_thinking_round_trip(
-        self, server: MockChessServer
-    ) -> None:
+    async def test_resolve_thinking_round_trip(self, server: MockChessServer) -> None:
         """resolve_thinking() output works directly with llm_turn()."""
         white, black = await _setup_game(server)
 
