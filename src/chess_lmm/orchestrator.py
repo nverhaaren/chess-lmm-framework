@@ -166,6 +166,23 @@ async def run_game(
 
         llm_color = "black" if human_color == "white" else "white"
 
+        # Write game-start markers to both log files
+        game_start_info: dict[str, Any] = {
+            "type": "game_start",
+            "game_id": create_result["game_id"],
+            "model": args.model,
+            "human_color": human_color,
+            "llm_color": llm_color,
+        }
+        if args.fen:
+            game_start_info["fen"] = args.fen
+        if thinking_cfg.thinking:
+            game_start_info["thinking"] = thinking_cfg.thinking
+        if thinking_cfg.effort:
+            game_start_info["effort"] = thinking_cfg.effort
+        human_recorder.write_marker(game_start_info)
+        llm_interaction_logger.log(dict(game_start_info))
+
         # Join game
         await human_client.join_game(human_color)
         await llm_client.join_game(llm_color)
