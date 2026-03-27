@@ -15,6 +15,7 @@ from chess_lmm.llm_agent import (
     _build_position_context,
     _truncate_history,
     llm_turn,
+    resolve_thinking,
 )
 from chess_lmm.mock_server import MockChessServer
 from chess_lmm.recording import LlmInteractionLogger
@@ -386,15 +387,15 @@ class TestThinking:
             white,
             mock_anthropic,
             "test-model",
-            thinking_budget=2048,
+            thinking={"type": "enabled", "budget_tokens": 2048},
         )
 
         assert result.game_ongoing is True
         status = await white.get_status()
         assert status["turn"] == "black"
 
-    async def test_thinking_budget_in_request(self, server: MockChessServer) -> None:
-        """Verify thinking param and adjusted max_tokens in API request."""
+    async def test_manual_thinking_in_request(self, server: MockChessServer) -> None:
+        """Verify manual thinking param and adjusted max_tokens in API request."""
         white, black = await _setup_game(server)
 
         mock_anthropic = MagicMock()
@@ -406,7 +407,7 @@ class TestThinking:
             white,
             mock_anthropic,
             "test-model",
-            thinking_budget=10000,
+            thinking={"type": "enabled", "budget_tokens": 10000},
         )
 
         call_kwargs = mock_anthropic.messages.create.call_args[1]
@@ -416,8 +417,28 @@ class TestThinking:
         }
         assert call_kwargs["max_tokens"] == 11024
 
+    async def test_adaptive_thinking_in_request(self, server: MockChessServer) -> None:
+        """Adaptive thinking sets generous max_tokens."""
+        white, black = await _setup_game(server)
+
+        mock_anthropic = MagicMock()
+        mock_anthropic.messages.create.return_value = make_thinking_tool_response(
+            "Analysis...", "make_move", {"move": "e4"}
+        )
+
+        await llm_turn(
+            white,
+            mock_anthropic,
+            "test-model",
+            thinking={"type": "adaptive"},
+        )
+
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        assert call_kwargs["thinking"] == {"type": "adaptive"}
+        assert call_kwargs["max_tokens"] == 16384
+
     async def test_thinking_disabled_by_default(self, server: MockChessServer) -> None:
-        """Without thinking_budget, no thinking param and max_tokens=1024."""
+        """Without thinking, no thinking param and max_tokens=1024."""
         white, black = await _setup_game(server)
 
         mock_anthropic = MagicMock()
@@ -460,7 +481,7 @@ class TestThinking:
             white,
             mock_anthropic,
             "test-model",
-            thinking_budget=2048,
+            thinking={"type": "enabled", "budget_tokens": 2048},
         )
 
         assert result.game_ongoing is True
@@ -507,7 +528,7 @@ class TestThinking:
             white,
             mock_anthropic,
             "test-model",
-            thinking_budget=2048,
+            thinking={"type": "enabled", "budget_tokens": 2048},
         )
 
         assert result.game_ongoing is True
@@ -516,16 +537,16 @@ class TestThinking:
         assert status["turn"] == "black"
 
     async def test_thinking_budget_too_small(self, server: MockChessServer) -> None:
-        """thinking_budget < 1024 raises ValueError."""
+        """Manual budget < 1024 raises ValueError."""
         white, black = await _setup_game(server)
         mock_anthropic = MagicMock()
 
-        with pytest.raises(ValueError, match="thinking_budget must be"):
+        with pytest.raises(ValueError, match="budget_tokens must be"):
             await llm_turn(
                 white,
                 mock_anthropic,
                 "test-model",
-                thinking_budget=500,
+                thinking={"type": "enabled", "budget_tokens": 500},
             )
 
     async def test_thinking_logged(
@@ -547,7 +568,7 @@ class TestThinking:
             mock_anthropic,
             "test-model",
             llm_logger=llm_logger,
-            thinking_budget=2048,
+            thinking={"type": "enabled", "budget_tokens": 2048},
         )
 
         log_content = (tmp_path / "llm.jsonl").read_text()
@@ -577,13 +598,48 @@ class TestThinking:
             mock_anthropic,
             "test-model",
             llm_logger=llm_logger,
-            thinking_budget=2048,
+            thinking={"type": "enabled", "budget_tokens": 2048},
         )
 
         assert result.game_ongoing is True
         # Should have logged 4 entries: request, response, request, response
         log_lines = (tmp_path / "llm.jsonl").read_text().strip().split("\n")
         assert len(log_lines) == 4
+
+
+class TestResolveThinking:
+    """Tests for resolve_thinking() helper."""
+
+    def test_off(self) -> None:
+        assert resolve_thinking("off") is None
+
+    def test_low(self) -> None:
+        result = resolve_thinking("low")
+        assert result == {"type": "adaptive", "effort": "low"}
+
+    def test_medium(self) -> None:
+        result = resolve_thinking("medium")
+        assert result == {"type": "adaptive", "effort": "medium"}
+
+    def test_high(self) -> None:
+        result = resolve_thinking("high")
+        assert result == {"type": "adaptive", "effort": "high"}
+
+    def test_max(self) -> None:
+        result = resolve_thinking("max")
+        assert result == {"type": "adaptive", "effort": "max"}
+
+    def test_integer_string(self) -> None:
+        result = resolve_thinking("10000")
+        assert result == {"type": "enabled", "budget_tokens": 10000}
+
+    def test_integer_string_too_small(self) -> None:
+        with pytest.raises(ValueError, match="budget_tokens must be"):
+            resolve_thinking("500")
+
+    def test_invalid_string(self) -> None:
+        with pytest.raises(ValueError, match="Invalid thinking"):
+            resolve_thinking("turbo")
 
 
 class TestHistory:

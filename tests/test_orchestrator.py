@@ -32,7 +32,7 @@ class TestParseArgs:
         assert args.model == "claude-sonnet-4-6"
         assert args.fen is None
         assert args.log_dir == Path("./game-logs")
-        assert args.thinking_budget is None
+        assert args.thinking == "off"
         assert args.max_history == 40
         assert args.no_cache is False
 
@@ -54,13 +54,17 @@ class TestParseArgs:
         assert args.fen == "8/8/8/8/8/8/8/8 w - - 0 1"
         assert args.log_dir == Path("/tmp/logs")
 
-    def test_thinking_budget(self) -> None:
-        args = parse_args(["--thinking-budget", "10000"])
-        assert args.thinking_budget == 10000
+    def test_thinking_adaptive(self) -> None:
+        args = parse_args(["--thinking", "high"])
+        assert args.thinking == "high"
 
-    def test_thinking_budget_default_none(self) -> None:
+    def test_thinking_manual_budget(self) -> None:
+        args = parse_args(["--thinking", "10000"])
+        assert args.thinking == "10000"
+
+    def test_thinking_default_off(self) -> None:
         args = parse_args([])
-        assert args.thinking_budget is None
+        assert args.thinking == "off"
 
     def test_max_history(self) -> None:
         args = parse_args(["--max-history", "20"])
