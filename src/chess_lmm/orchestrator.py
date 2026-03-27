@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from chess_lmm.human_player import human_turn
-from chess_lmm.llm_agent import llm_turn
+from chess_lmm.llm_agent import llm_turn, resolve_thinking
 from chess_lmm.recording import (
     GameRecorder,
     LlmInteractionLogger,
@@ -62,10 +62,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--thinking-budget",
-        type=int,
-        default=None,
-        help="Token budget for extended thinking (default: disabled)",
+        "--thinking",
+        default="off",
+        help=(
+            "Thinking mode: 'off', 'low', 'medium', 'high', 'max' "
+            "(adaptive), or an integer token budget (manual). "
+            "Default: off"
+        ),
     )
 
     parser.add_argument(
@@ -111,6 +114,9 @@ async def run_game(
         level=log_level,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+
+    # Resolve thinking config early so invalid values fail fast
+    thinking_config = resolve_thinking(args.thinking)
 
     out = output_stream or sys.stdout
 
@@ -231,7 +237,7 @@ async def run_game(
                     anthropic_client,
                     args.model,
                     llm_logger=llm_interaction_logger,
-                    thinking_budget=args.thinking_budget,
+                    thinking=thinking_config,
                     conversation_history=conversation_history,
                     enable_cache=not args.no_cache,
                     max_history=args.max_history,

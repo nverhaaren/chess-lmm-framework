@@ -136,6 +136,40 @@ class LlmTurnResult:
     messages: list[dict[str, Any]]
 
 
+_ADAPTIVE_MAX_TOKENS: dict[str, int] = {
+    "low": 4096,
+    "medium": 8192,
+    "high": 16384,
+    "max": 32768,
+}
+
+
+def resolve_thinking(value: str) -> dict[str, Any] | None:
+    """Resolve a CLI thinking value to an API thinking config dict.
+
+    Accepts: "off", "low", "medium", "high", "max", or an integer string
+    (manual budget_tokens). Case-insensitive, whitespace-trimmed.
+
+    Returns None for "off", or a thinking config dict.
+    """
+    normalized = value.strip().lower()
+    if normalized == "off":
+        return None
+    if normalized in _ADAPTIVE_MAX_TOKENS:
+        config: dict[str, Any] = {"type": "adaptive", "effort": normalized}
+        return config
+    try:
+        budget = int(value)
+    except ValueError:
+        raise ValueError(
+            f"Invalid thinking value: {value!r}. "
+            f"Use 'off', 'low', 'medium', 'high', 'max', or an integer."
+        ) from None
+    if budget < 1024:
+        raise ValueError("budget_tokens must be >= 1024")
+    return {"type": "enabled", "budget_tokens": budget}
+
+
 def _strip_cache_control(messages: list[dict[str, Any]]) -> None:
     """Remove cache_control from all user messages."""
     for msg in messages:
@@ -206,7 +240,7 @@ async def llm_turn(
     llm_logger: LlmInteractionLogger | None = None,
     system_prompt: str | None = None,
     conversation_history: list[dict[str, Any]] | None = None,
-    thinking_budget: int | None = None,
+    thinking: dict[str, Any] | None = None,
     enable_cache: bool = True,
     max_history: int = 40,
 ) -> LlmTurnResult:
@@ -215,15 +249,18 @@ async def llm_turn(
     Returns LlmTurnResult with game_ongoing flag and updated messages.
 
     Args:
-        thinking_budget: Token budget for extended thinking. Must be >= 1024
-            if set. When enabled, max_tokens is automatically increased to
-            accommodate both thinking and output.
+        thinking: Thinking config dict for the API, e.g.
+            {"type": "enabled", "budget_tokens": N} for manual or
+            {"type": "adaptive", "effort": "high"} for adaptive.
+            None disables thinking.
         enable_cache: Add cache_control breakpoints to system prompt,
             tools, and history frontier for prompt caching.
         max_history: Maximum messages to keep in history. Must be >= 2.
     """
-    if thinking_budget is not None and thinking_budget < 1024:
-        raise ValueError("thinking_budget must be >= 1024")
+    if thinking is not None:
+        budget = thinking.get("budget_tokens")
+        if budget is not None and budget < 1024:
+            raise ValueError("budget_tokens must be >= 1024")
     if max_history < 2:
         raise ValueError("max_history must be >= 2")
 
@@ -283,8 +320,15 @@ async def llm_turn(
     if enable_cache and tools:
         tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
 
-    # Compute max_tokens based on whether thinking is enabled
-    max_tokens = thinking_budget + 1024 if thinking_budget is not None else 1024
+    # Compute max_tokens based on thinking config
+    if thinking is None:
+        max_tokens = 1024
+    elif "budget_tokens" in thinking:
+        max_tokens = thinking["budget_tokens"] + 1024
+    else:
+        # Adaptive thinking — scale by effort level
+        effort = thinking.get("effort", "high")
+        max_tokens = _ADAPTIVE_MAX_TOKENS.get(effort, 16384)
 
     # 5. Call Claude with tools
     max_iterations = 5  # Safety limit for tool-use loop
@@ -296,11 +340,8 @@ async def llm_turn(
             "messages": messages,
             "tools": tools,
         }
-        if thinking_budget is not None:
-            request_payload["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": thinking_budget,
-            }
+        if thinking is not None:
+            request_payload["thinking"] = thinking
 
         if llm_logger:
             llm_logger.log({"type": "api_request", "payload": request_payload})
